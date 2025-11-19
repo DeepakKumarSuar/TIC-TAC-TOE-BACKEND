@@ -121,13 +121,20 @@ async def handler(websocket, path):
 
 async def main():
     port = int(os.environ.get("PORT", 8080))
-    mimetypes.init(); mimetypes.add_type('application/x-python', '.py'); mimetypes.add_type('image/jpeg', '.jpeg')
-    
-    asyncio.get_event_loop().run_until_complete(
-    websockets.serve(handle_connection, "0.0.0.0", port)
-)
-asyncio.get_event_loop().run_forever()
+    mimetypes.init()
+    mimetypes.add_type('application/x-python', '.py')
+    mimetypes.add_type('image/jpeg', '.jpeg')
+
+    server = await websockets.serve(
+        handler,          # correct handler
+        "0.0.0.0",
+        port,
+        process_request=process_request  # allow static serving
+    )
+
+    logging.info(f"WebSocket server running on port {port}")
+    await server.wait_closed()
+
 
 if __name__ == "__main__":
-
     asyncio.run(main())
