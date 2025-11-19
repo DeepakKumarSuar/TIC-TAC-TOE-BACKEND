@@ -40,7 +40,7 @@ async def process_request(path, request_headers):
 
 def generate_unique_code():
     while True:
-        code = str(random.randint(100000, 999999))
+        code = str(random.randint(0, 101))
         if code not in ROOMS:
             return code
 
@@ -185,3 +185,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
