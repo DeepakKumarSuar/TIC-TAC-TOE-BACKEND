@@ -16,131 +16,165 @@ WINNING_CONDITIONS = [
     [0, 4, 8], [2, 4, 6]
 ]
 
-async def serve_static_file(path):
-    filename = 'index.html' if path == '/' else path.lstrip('/')
-    if '..' in filename or filename.startswith('/'):
-        return HTTPStatus.NOT_FOUND, [], b'404 Not Found'
-    try:
-        with open(filename, 'rb') as f:
-            content = f.read()
-        mime_type, _ = mimetypes.guess_type(filename)
-        headers = [('Content-Type', mime_type or 'application/octet-stream'),
-                   ('Content-Length', str(len(content)))]
-        return HTTPStatus.OK, headers, content
-    except FileNotFoundError:
-        return HTTPStatus.NOT_FOUND, [], b'404 Not Found'
-    except Exception:
-        return HTTPStatus.INTERNAL_SERVER_ERROR, [], b'500 Internal Error'
+# ------------------------------------------------------
+# STATIC FILE SERVING
+# ------------------------------------------------------
 
-async def process_request(path, request_headers):
-    static_files = ['/', '/index.html', '/styles.css', '/main.py', '/TTT_Img.jpeg']
+async def serve_static_file(path):
+    filename = "index.html" if path == "/" else path.lstrip("/")
+
+    try:
+        with open(filename, "rb") as f:
+            content = f.read()
+
+        mime, _ = mimetypes.guess_type(filename)
+        headers = [
+            ("Content-Type", mime or "application/octet-stream"),
+            ("Content-Length", str(len(content)))
+        ]
+
+        return HTTPStatus.OK, headers, content
+
+    except FileNotFoundError:
+        return HTTPStatus.NOT_FOUND, [], b"404 Not Found"
+
+    except Exception:
+        return HTTPStatus.INTERNAL_SERVER_ERROR, [], b"500 Internal Server Error"
+
+
+async def process_request(path, headers):
+    static_files = ["/", "/index.html", "/styles.css", "/main.py", "/TTT_Img.jpeg"]
     if path in static_files:
         return await serve_static_file(path)
     return None
 
-def generate_unique_code():
+
+# ------------------------------------------------------
+# GAME LOGIC
+# ------------------------------------------------------
+
+def generate_code():
     while True:
-        code = str(random.randint(0, 101))
+        code = str(random.randint(0, 100))
         if code not in ROOMS:
             return code
 
-async def send_message(websocket, type, data=None):
-    message = {'type': type, 'data': data if data else {}}
+
+async def send(ws, type, data=None):
+    msg = {"type": type, "data": data or {}}
     try:
-        await websocket.send(json.dumps(message))
+        await ws.send(json.dumps(msg))
     except websockets.ConnectionClosed:
         pass
 
-async def broadcast_message(room_code, type, data=None):
-    if room_code in ROOMS:
-        room = ROOMS[room_code]
-        targets = [room.get("player_x"), room.get("player_o")]
-        await asyncio.wait([send_message(ws, type, data) for ws in targets if ws])
 
-def get_room_by_websocket(ws):
+async def broadcast(code, type, data=None):
+    if code not in ROOMS:
+        return
+
+    room = ROOMS[code]
+    targets = [room.get("player_x"), room.get("player_o")]
+
+    await asyncio.gather(*[
+        send(ws, type, data) for ws in targets if ws
+    ])
+
+
+def find_room(ws):
     for code, room in ROOMS.items():
         if room.get("player_x") == ws or room.get("player_o") == ws:
             return code, room
     return None, None
 
+
 def check_win(board):
-    for a,b,c in WINNING_CONDITIONS:
-        if board[a] and board[a] == board[b] and board[a] == board[c]:
-            return board[a], [a,b,c]
+    for a, b, c in WINNING_CONDITIONS:
+        if board[a] and board[a] == board[b] == board[c]:
+            return board[a], [a, b, c]
+
     if "" not in board:
         return "TIE", None
+
     return None, None
 
-async def handle_create_room(ws):
-    code = generate_unique_code()
+
+# ------------------------------------------------------
+# HANDLERS
+# ------------------------------------------------------
+
+async def handle_create(ws):
+    code = generate_code()
     ROOMS[code] = {
         "player_x": ws,
         "player_o": None,
         "game_state": [""] * 9,
-        "current_player": "X"
+        "turn": "X"
     }
-    await send_message(ws, 'room_created', {'code': code})
+    await send(ws, "room_created", {"code": code})
 
-async def handle_join_room(ws, data):
-    code = data.get('code')
+
+async def handle_join(ws, data):
+    code = data.get("code")
+
     if code not in ROOMS:
-        await send_message(ws, 'error', {'message': "Room not found."})
-        return
+        return await send(ws, "error", {"message": "Room not found"})
 
     room = ROOMS[code]
+
     if room["player_o"]:
-        await send_message(ws, 'error', {'message': "Room is full."})
-        return
+        return await send(ws, "error", {"message": "Room full"})
 
     room["player_o"] = ws
 
-    await send_message(ws, 'room_joined', {'code': code})
-    await send_message(room["player_x"], 'opponent_joined', {'code': code})
+    await send(room["player_x"], "opponent_joined", {"code": code})
+    await send(ws, "room_joined", {"code": code})
 
-async def handle_game_move(ws, data):
-    code = data.get('code')
-    index = data.get('index')
-    player = data.get('player')
+
+async def handle_move(ws, data):
+    code = data.get("code")
+    idx = data.get("index")
+    player = data.get("player")
 
     if code not in ROOMS:
         return
 
     room = ROOMS[code]
 
-    if room["current_player"] != player:
+    if room["turn"] != player:
         return
 
-    if room["game_state"][index] != "":
+    if room["game_state"][idx] != "":
         return
 
-    room["game_state"][index] = player
+    room["game_state"][idx] = player
 
-    winner, condition = check_win(room["game_state"])
+    winner, win_line = check_win(room["game_state"])
 
     if winner:
-        await broadcast_message(code, 'game_win' if winner != "TIE" else 'game_tie', {
-            'winner': winner,
-            'condition': condition,
-            'board': room['game_state'],
-            'index': index,
-            'player': player
+        msg = "game_win" if winner != "TIE" else "game_tie"
+        await broadcast(code, msg, {
+            "winner": winner,
+            "condition": win_line,
+            "board": room["game_state"]
         })
-
         room["game_state"] = [""] * 9
-        room["current_player"] = "X"
+        room["turn"] = "X"
+
     else:
-        room["current_player"] = "O" if player == "X" else "X"
-        await broadcast_message(code, 'game_move', {'index': index, 'player': player})
-        await broadcast_message(code, 'turn_switch', {'player': room["current_player"]})
+        room["turn"] = "O" if player == "X" else "X"
+        await broadcast(code, "game_move", {"index": idx, "player": player})
+        await broadcast(code, "turn_switch", {"player": room["turn"]})
+
 
 async def unregister(ws):
-    code, room = get_room_by_websocket(ws)
+    code, room = find_room(ws)
+
     if not code:
         return
 
-    player = 'X' if room.get("player_x") == ws else 'O'
+    symbol = "X" if room["player_x"] == ws else "O"
 
-    if player == 'X':
+    if symbol == "X":
         room["player_x"] = None
     else:
         room["player_o"] = None
@@ -148,30 +182,38 @@ async def unregister(ws):
     if not room["player_x"] and not room["player_o"]:
         del ROOMS[code]
     else:
-        await broadcast_message(code, 'opponent_disconnected', {'disconnected': player})
+        await broadcast(code, "opponent_disconnected", {"symbol": symbol})
+
 
 async def handler(ws, path):
-    try:
-        async for msg in ws:
-            data = json.loads(msg)
-            t = data.get('type')
+    logging.info("Client connected")
 
-            if t == 'create_room':
-                await handle_create_room(ws)
-            elif t == 'join_room':
-                await handle_join_room(ws, data)
-            elif t == 'game_move':
-                await handle_game_move(ws, data)
-            elif t == 'disconnect_room':
-                await unregister(ws)
+    try:
+        async for message in ws:
+            data = json.loads(message)
+            type = data.get("type")
+
+            if type == "create_room":
+                await handle_create(ws)
+            elif type == "join_room":
+                await handle_join(ws, data)
+            elif type == "game_move":
+                await handle_move(ws, data)
 
     except websockets.ConnectionClosed:
         pass
+
     finally:
         await unregister(ws)
 
+
+# ------------------------------------------------------
+# START SERVER (Railway)
+# ------------------------------------------------------
+
 async def main():
     port = int(os.environ.get("PORT", 8080))
+    mimetypes.init()
 
     server = await websockets.serve(
         handler,
@@ -180,9 +222,9 @@ async def main():
         process_request=process_request
     )
 
-    logging.info(f"WebSocket server started on {port}")
+    logging.info(f"Server started on ws://0.0.0.0:{port}")
     await server.wait_closed()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
-
