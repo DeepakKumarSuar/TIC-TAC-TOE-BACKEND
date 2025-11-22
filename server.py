@@ -164,7 +164,7 @@ async def handler(ws, path):
         await unregister(ws)
 
 async def main():
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 8080))
     logger.info(f"Starting WebSocket server on port {port}")
     
     async with websockets.serve(handler, "0.0.0.0", port):
@@ -173,3 +173,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
